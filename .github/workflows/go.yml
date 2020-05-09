@@ -35,5 +35,7 @@ jobs:
         go build -v app/main.go
 
     - name: Test
-      run: 
-        go test -v app/*_test.go
+      run: |
+        echo $(pwd)
+        echo $(ls -la)
+        go test -v ./app
