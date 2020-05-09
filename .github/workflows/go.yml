@@ -38,4 +38,4 @@ jobs:
       run: |
         echo $(pwd)
         echo $(ls -la)
-        go test -run app/*_test.go
+        go test -v ./app
