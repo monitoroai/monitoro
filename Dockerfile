@@ -7,7 +7,7 @@ RUN mkdir /app
 COPY . /app
 WORKDIR /app
 
-RUN go build -o main app/main.go
+RUN go build -o main main.go
 RUN adduser -S -D -H -h /app appuser
 
 USER appuser

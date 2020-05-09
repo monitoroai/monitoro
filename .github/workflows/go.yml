@@ -32,10 +32,8 @@ jobs:
 
     - name: Build
       run: 
-        go build -v app/main.go
+        go build -v main.go
 
     - name: Test
-      run: |
-        echo $(pwd)
-        echo $(ls -la)
-        go test -v ./app
+      run: 
+        go test -v *_test.go

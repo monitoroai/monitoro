@@ -27,6 +27,7 @@ func GenerateJWT() (string, error) {
 }
 
 func TestHandler(t *testing.T) {
+	buffer := Buffer{data: make([]string, 0)}
 	req, err := http.NewRequest("GET", "/", nil)
 	token, err := GenerateJWT()
 	req.Header.Add("Token", token)
@@ -35,17 +36,19 @@ func TestHandler(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	go buffer.parseLogs("tests/file.log")
+
 	// response recorder mocks http.ResponseWriter
 	rr := httptest.NewRecorder()
-	handler := http.HandlerFunc(HomeHandler)
+	handler := http.HandlerFunc(buffer.HomeHandler)
 
 	handler.ServeHTTP(rr, req)
-	if status := rr.Code; status != http.StatusOK {
+	if status := rr.Code; status != 201 {
 		t.Errorf("wrong status code, expected %v wanted %v", rr.Code, http.StatusOK)
 	}
 
-	expectedResponse := "Hello World"
+	expectedResponse := "new line"
 	if rr.Body.String() != expectedResponse {
-		t.Errorf("wrong response, expected %s wanted %s", rr.Body.String(), expectedResponse)
+		t.Errorf("wrong response, expected %s wanted %s", expectedResponse, rr.Body.String())
 	}
 }
