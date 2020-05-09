@@ -36,4 +36,4 @@ jobs:
 
     - name: Test
       run: 
-        go test -v app/*_test.go
+        go test -run app/*_test.go
