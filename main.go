@@ -1,91 +1,88 @@
 package main
 
 import (
-	"encoding/json"
+	"bufio"
 	"fmt"
-	jwt "github.com/dgrijalva/jwt-go"
-	"github.com/gorilla/mux"
 	"github.com/hpcloud/tail"
-	"net/http"
+	"github.com/trivago/grok"
 	"os"
 	"sync"
 )
-
-var SigningKey = []byte(os.Getenv("MONITORO_SECRET_KEY"))
 
 type Buffer struct {
 	sync.Mutex
 	data []string
 }
 
-// Opens a stream to a log file and continuously sends the parsed
-// lines to a buffer
-func (buffer *Buffer) parseLogs(logfile string) {
-	t, err := tail.TailFile(logfile, tail.Config{Follow: true})
-
+// Compare one line of a log file against
+// some popular formats using grok. If it finds
+// a matching format it returns it
+func findFormat(line string) (string, error) {
+	stdFormat := []string{
+		"%{COMBINEDAPACHELOG}",
+		"%{COMMONAPACHELOG}",
+	}
+	g, err := grok.New(grok.Config{NamedCapturesOnly: true})
 	if err != nil {
-		fmt.Errorf("error reading log file %s", err)
+		fmt.Printf("Error when creating new Grok object\n")
+		return "", err
+	}
+	for _, f := range stdFormat {
+		r, err := g.MatchString(f, line)
+		if err != nil {
+			fmt.Printf("Error trying to match format: %s with line: %s", f, line)
+			return "", err
+		}
+		if r {
+			return f, nil
+		}
+	}
+	return "%{UNKNOWNFORMAT}", nil
+}
+
+// Compare one line of a log file with the
+// most standard log formats. If it finds a matching format
+// it returns it, else it tries to extract standard fields
+// individually, if it fails it returns an error
+func FormatDiscovery(logfile string) (string, error) {
+	f, err := os.Open(logfile)
+	if err != nil {
+		fmt.Printf("Error when opening file: %s", logfile)
+		return "", err
 	}
 
+	defer func() {
+		if err := f.Close(); err != nil {
+			panic(err)
+		}
+	}()
+
+	reader := bufio.NewReader(f)
+	line, _, err := reader.ReadLine()
+
+	if err != nil {
+		fmt.Printf("Error when reading file: %s", logfile)
+	}
+
+	format, err := findFormat(string(line))
+
+	if err != nil {
+		fmt.Printf("Error finding format with line: %s\n", line)
+		return format, err
+	}
+	return format, nil
+}
+
+// Concurrently process each line of the logs
+func (buffer *Buffer) parseLines(t *tail.Tail, i int) {
 	for line := range t.Lines {
-		fmt.Println(line.Text)
 		buffer.Lock()
 		buffer.data = append(buffer.data, line.Text)
 		buffer.Unlock()
 	}
 }
 
-// Checks if the token is valid, returns the buffer and
-// re-initialize it to an array of size 0
-func (buffer *Buffer) HomeHandler(w http.ResponseWriter, r *http.Request) {
-	if !isAuthorized(r) {
-		w.WriteHeader(http.StatusForbidden)
-		w.Write([]byte("403 - Not Authorized"))
-		return
-	}
-	fmt.Println("Endpoint Hit: homePage")
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-
-	buffer.Lock()
-	json.NewEncoder(w).Encode(buffer.data)
-	buffer.data = make([]string, 0)
-	buffer.Unlock()
-}
-
-func isAuthorized(r *http.Request) bool {
-	if r.Header["Token"] != nil {
-
-		token, err := jwt.Parse(r.Header["Token"][0], func(token *jwt.Token) (interface{}, error) {
-			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-				return nil, fmt.Errorf("bad token")
-			}
-			return SigningKey, nil
-		})
-
-		if err != nil {
-			return false
-		}
-
-		if token.Valid {
-			return true
-		} else {
-			return false
-		}
-	} else {
-		return false
-	}
-}
-
 func main() {
-	fmt.Println("Starting parser...")
-	buffer := Buffer{data: make([]string, 0)}
-
-	go buffer.parseLogs("file.log")
-
-	fmt.Println("Starting application...")
-	r := mux.NewRouter()
-	r.HandleFunc("/", buffer.HomeHandler)
-	http.Handle("/", r)
-	http.ListenAndServe(":9000", nil)
+	f, _ := FormatDiscovery("tests/apache.log")
+	print(f)
 }

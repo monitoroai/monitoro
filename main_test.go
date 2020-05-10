@@ -3,11 +3,8 @@ package main
 import (
 	"fmt"
 	"github.com/dgrijalva/jwt-go"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"testing"
-	"time"
 )
 
 func GenerateJWT() (string, error) {
@@ -27,40 +24,23 @@ func GenerateJWT() (string, error) {
 	return tokenString, nil
 }
 
-func createTestFile(name string) {
-	f, _ := os.Create(name)
-	f.WriteString("new line\nnew line\n\n")
-	f.Sync()
-}
-
-func TestHandler(t *testing.T) {
-	testfile := "tests/file.log"
-	createTestFile(testfile)
-
-	buffer := Buffer{data: make([]string, 0)}
-	req, err := http.NewRequest("GET", "/", nil)
-	token, err := GenerateJWT()
-	req.Header.Add("Token", token)
-
-	if err != nil {
-		t.Fatal(err)
+func TestFormatDiscovery(t *testing.T) {
+	files := map[string]string{
+		"tests/apache.log":          "%{COMMONAPACHELOG}",
+		"tests/apache_combined.log": "%{COMBINEDAPACHELOG}",
+		"tests/common_log.log":      "%{COMMONAPACHELOG}",
+		"tests/file.log":            "%{UNKNOWNFORMAT}",
 	}
+	for logfile, expFmt := range files {
+		recFmt, err := FormatDiscovery(logfile)
 
-	go buffer.parseLogs(testfile)
-	time.Sleep(1000 * time.Millisecond)
+		if err != nil {
+			t.Errorf("Error during format discovery with file: %s", logfile)
+		}
 
-	// response recorder mocks http.ResponseWriter
-	rr := httptest.NewRecorder()
-	handler := http.HandlerFunc(buffer.HomeHandler)
-
-	handler.ServeHTTP(rr, req)
-	if status := rr.Code; status != 201 {
-		t.Errorf("wrong status code, expected %v got %v", rr.Code, http.StatusOK)
-	}
-
-	expectedResponse := "[\"new line\",\"new line\",\"\"]\n"
-	response := rr.Body.String()
-	if response != expectedResponse {
-		t.Errorf("wrong response, expected %s got %s", expectedResponse, response)
+		if expFmt != recFmt {
+			t.Errorf("Wrong format discovered for file: %s, expected: %s but got: %s",
+				logfile, expFmt, recFmt)
+		}
 	}
 }
