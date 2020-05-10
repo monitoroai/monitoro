@@ -50,9 +50,9 @@ func TestHandler(t *testing.T) {
 	}
 
 	expectedResponseW := "[\"new line\\r\",\"new line\\r\",\"\\r\"]\n"
-	expectedResponsel := "[\"new line\",\"new line\",\"\"]"
+	expectedResponseL := "[\"new line\",\"new line\",\"\"]"
 	response := rr.Body.String()
-	if response != expectedResponseW && response != expectedResponsel {
-		t.Errorf("wrong response, expected %s got %s", expectedResponseW, response)
+	if response != expectedResponseW && response != expectedResponseL {
+		t.Errorf("wrong response, expected %s got %s", expectedResponseL, response)
 	}
 }
