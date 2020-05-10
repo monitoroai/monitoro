@@ -49,8 +49,10 @@ func TestHandler(t *testing.T) {
 		t.Errorf("wrong status code, expected %v got %v", rr.Code, http.StatusOK)
 	}
 
-	expectedResponse := "[\"new line\\r\",\"new line\\r\",\"\\r\"]\n"
-	if rr.Body.String() != expectedResponse {
-		t.Errorf("wrong response, expected %s got %s", expectedResponse, rr.Body.String())
+	expectedResponseW := "[\"new line\\r\",\"new line\\r\",\"\\r\"]\n"
+	expectedResponsel := "[\"new line\",\"new line\",\"\"]"
+	response := rr.Body.String()
+	if response != expectedResponseW && response != expectedResponsel {
+		t.Errorf("wrong response, expected %s got %s", expectedResponseW, response)
 	}
 }
