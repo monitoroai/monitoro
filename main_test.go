@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"testing"
+	"time"
 )
 
 func GenerateJWT() (string, error) {
@@ -37,6 +38,7 @@ func TestHandler(t *testing.T) {
 	}
 
 	go buffer.parseLogs("tests/file.log")
+	time.Sleep(100 * time.Millisecond)
 
 	// response recorder mocks http.ResponseWriter
 	rr := httptest.NewRecorder()
@@ -44,11 +46,11 @@ func TestHandler(t *testing.T) {
 
 	handler.ServeHTTP(rr, req)
 	if status := rr.Code; status != 201 {
-		t.Errorf("wrong status code, expected %v wanted %v", rr.Code, http.StatusOK)
+		t.Errorf("wrong status code, expected %v got %v", rr.Code, http.StatusOK)
 	}
 
-	expectedResponse := "new line"
+	expectedResponse := "[\"new line\\r\",\"new line\\r\",\"\\r\"]\n"
 	if rr.Body.String() != expectedResponse {
-		t.Errorf("wrong response, expected %s wanted %s", expectedResponse, rr.Body.String())
+		t.Errorf("wrong response, expected %s got %s", expectedResponse, rr.Body.String())
 	}
 }
