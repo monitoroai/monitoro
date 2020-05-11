@@ -3,27 +3,53 @@ package main
 import (
 	"fmt"
 	"github.com/dgrijalva/jwt-go"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"testing"
 )
 
-func GenerateJWT() (string, error) {
-	token := jwt.New(jwt.SigningMethodHS256)
+func isAuthorized(r *http.Request, secret string) bool {
+	if r.Header["Token"] != nil {
 
-	claims := token.Claims.(jwt.MapClaims)
+		token, err := jwt.Parse(r.Header["Token"][0], func(token *jwt.Token) (interface{}, error) {
+			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+				return nil, fmt.Errorf("bad token")
+			}
+			return secret, nil
+		})
 
-	claims["authorized"] = true
+		if err != nil {
+			return false
+		}
 
-	tokenString, err := token.SignedString([]byte(os.Getenv("MONITORO_SECRET_KEY")))
-
-	if err != nil {
-		fmt.Errorf("Something Went Wrong: %s", err.Error())
-		return "", err
+		if token.Valid {
+			return true
+		} else {
+			return false
+		}
+	} else {
+		return false
 	}
-
-	return tokenString, nil
 }
 
+func MockHandler(w http.ResponseWriter, r *http.Request) {
+	if !isAuthorized(r, os.Getenv("MONITORO_SECRET_KEY")) {
+		fmt.Errorf("Bad key")
+		return
+	}
+
+}
+
+func testEndToEnd(t *testing.T) {
+	handler := http.HandlerFunc(MockHandler)
+	server := httptest.NewServer(handler)
+	print(server.URL)
+}
+
+// TestFormatDiscovery makes sure the right format is
+// discovered for supported log format (at the moment:
+// apache common and combined)
 func TestFormatDiscovery(t *testing.T) {
 	files := map[string]string{
 		"tests/apache.log":          "%{COMMONAPACHELOG}",
@@ -32,7 +58,7 @@ func TestFormatDiscovery(t *testing.T) {
 		"tests/file.log":            "%{UNKNOWNFORMAT}",
 	}
 	for logfile, expFmt := range files {
-		recFmt, err := FormatDiscovery(logfile)
+		recFmt, err := PatternDiscovery(logfile)
 
 		if err != nil {
 			t.Errorf("Error during format discovery with file: %s", logfile)
