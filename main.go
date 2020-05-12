@@ -8,7 +8,6 @@ import (
 	"github.com/dgrijalva/jwt-go"
 	"github.com/hpcloud/tail"
 	"github.com/trivago/grok"
-	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
@@ -60,7 +59,7 @@ func findPattern(line string) (string, error) {
 			return pattern, nil
 		}
 	}
-	return "%{UNKNOWNFORMAT}", nil
+	return "%{UNKNOWNPATTERN}", nil
 }
 
 // Compare one line of a log file with the
@@ -98,26 +97,17 @@ func PatternDiscovery(logfile string) (string, error) {
 
 // Concurrently parse each line of the logs in
 // the format discovered by FormatDiscovery
-func (buffer *Buffer) parseLines(t *tail.Tail, cg *grok.CompiledGrok) {
+func (buffer *Buffer) parseLines(url string, t *tail.Tail, cg *grok.CompiledGrok) {
 	for line := range t.Lines {
 		buffer.Lock()
 		fields := cg.ParseString(line.Text)
 		buffer.data = append(buffer.data, fields)
-		if len(buffer.data) == 500 {
+		if len(buffer.data) == 1000 {
 			reqBody, _ := json.Marshal(buffer.data)
-			req, err := http.NewRequest("POST", "http://127.0.0.1:9000/", bytes.NewBuffer(reqBody))
-
+			_, err := http.Post(url, "application/json", bytes.NewBuffer(reqBody))
 			if err != nil {
 				log.Fatalln(err)
 			}
-
-			defer req.Body.Close()
-			body, err := ioutil.ReadAll(req.Body)
-
-			if err != nil {
-				log.Fatalln(err)
-			}
-			log.Println(string(body))
 		}
 		buffer.Unlock()
 	}
@@ -127,7 +117,7 @@ func main() {
 	// Number of concurrent parser
 	//n := 10
 	//secret := os.Getenv("MONITORO_SECRET_KEY")
-	logfile := "tests/apache.log"
+	logfile := "tests/test.log"
 
 	pattern, _ := PatternDiscovery(logfile)
 	if pattern == "%{UNKNOWNPATTERN}" {
@@ -144,5 +134,5 @@ func main() {
 	//for i := 0; i < n; i++ {
 	//	go buffer.parseLines(t, cg)
 	//}
-	buffer.parseLines(t, cg)
+	buffer.parseLines("http://127.0.0.1:9000/", t, cg)
 }
