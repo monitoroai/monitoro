@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"github.com/akamensky/argparse"
 	"github.com/dgrijalva/jwt-go"
@@ -13,67 +12,18 @@ import (
 	"github.com/trivago/grok"
 	"net/http"
 	"os"
-	"sync"
 )
 
 type Buffer struct {
-	sync.Mutex
-	data []map[string]string
-	url  string
+	data  chan map[string]string
+	url   string
+	token string
 }
 
-func GenerateJWT(secret string) (string, error) {
-	token := jwt.New(jwt.SigningMethodHS256)
-
-	claims := token.Claims.(jwt.MapClaims)
-
-	claims["authorized"] = true
-
-	tokenString, err := token.SignedString([]byte(secret))
-
+func readHead(file string) ([]byte, error) {
+	f, err := os.Open(file)
 	if err != nil {
-		fmt.Errorf("Something Went Wrong: %s\n", err.Error())
-		return "", err
-	}
-
-	return tokenString, nil
-}
-
-// Compare one line of a log file against
-// some popular formats using grok. If it finds
-// a matching format it returns it
-func findPattern(line string) (string, error) {
-	stdPatterns := []string{
-		"%{COMBINEDAPACHELOG}",
-		"%{COMMONAPACHELOG}",
-	}
-	g, err := grok.New(grok.Config{NamedCapturesOnly: true})
-	if err != nil {
-		fmt.Printf("Error when creating new Grok object\n")
-		return "", err
-	}
-	for _, pattern := range stdPatterns {
-		r, err := g.MatchString(pattern, line)
-		if err != nil {
-			fmt.Printf("Error trying to match format: %s with line: %s", pattern, line)
-			return "", err
-		}
-		if r {
-			return pattern, nil
-		}
-	}
-	return "%{UNKNOWNPATTERN}", nil
-}
-
-// Compare one line of a log file with the
-// most standard log formats. If it finds a matching format
-// it returns it, else it tries to extract standard fields
-// individually, if it fails it returns an error
-func PatternDiscovery(logfile string) (string, error) {
-	f, err := os.Open(logfile)
-	if err != nil {
-		fmt.Printf("Error when opening file: %s", logfile)
-		return "", err
+		fmt.Printf("could not read file: %s", file)
 	}
 
 	defer func() {
@@ -84,24 +34,92 @@ func PatternDiscovery(logfile string) (string, error) {
 
 	reader := bufio.NewReader(f)
 	line, _, err := reader.ReadLine()
+	return line, err
+}
 
+func GenerateJWT(secret string) (string, error) {
+	token := jwt.New(jwt.SigningMethodHS256)
+	claims := token.Claims.(jwt.MapClaims)
+	claims["authorized"] = true
+	tokenString, err := token.SignedString([]byte(secret))
+
+	if err != nil {
+		fmt.Errorf("Something Went Wrong: %s\n", err.Error())
+		return "", err
+	}
+	return tokenString, nil
+}
+
+// Compare one line of a log file against
+// some popular formats using grok and return the format found
+func findPattern(line string, customPattern string) (string, grok.Config, error) {
+	c := grok.Config{}
+	patterns := []string{"%{COMBINEDAPACHELOG}", "%{COMMONAPACHELOG}"}
+	if customPattern != "" {
+		patterns = append(patterns, "%{CUSTOMPATTERN}")
+	}
+
+	for _, pattern := range patterns {
+		if pattern == "%{CUSTOMPATTERN}" {
+			c.Patterns = map[string]string{"CUSTOMPATTERN": customPattern}
+			c.NamedCapturesOnly = true
+		}
+		g, err := grok.New(c)
+		if err != nil {
+			fmt.Printf("Error when creating new Grok object\n")
+			return "", c, err
+		}
+		r, err := g.MatchString(pattern, line)
+		if err != nil {
+			fmt.Printf("Error trying to match format: %s with line: %s", pattern, line)
+			return "", c, err
+		}
+		if r {
+			return pattern, c, nil
+		}
+	}
+	return "%{UNKNOWNPATTERN}", c, nil
+}
+
+// Compare one line of a log file with the
+// most standard log formats. If it finds a matching format
+// it returns it, else it tries to extract standard fields
+// individually, if it fails it returns an error
+func PatternDiscovery(logfile string, customPattern string) (string, grok.Config, error) {
+	line, err := readHead(logfile)
 	if err != nil {
 		fmt.Printf("Error when reading file: %s", logfile)
 	}
 
-	pattern, err := findPattern(string(line))
-
+	pattern, c, err := findPattern(string(line), customPattern)
 	if err != nil {
 		fmt.Printf("Error finding format with line: %s\n", line)
-		return "", err
+		return "", c, err
 	}
-	return pattern, nil
+	return pattern, c, nil
 }
 
-// Send the data as a POST request to the given url
-func sendData(url string, data []map[string]string) error {
+// Reads all the content in the channel at once and send the
+// data as a POST request to the given url
+func sendData(url string, ch chan map[string]string, token string) error {
+	data := make([]map[string]string, len(ch))
+	for len(ch) > 0 {
+		d := <-ch
+		data = append(data, d)
+	}
 	reqBody, _ := json.Marshal(data)
-	_, err := http.Post(url, "application/json", bytes.NewBuffer(reqBody))
+	client := &http.Client{}
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(reqBody))
+	if err != nil {
+		fmt.Println("could not send data to server")
+	}
+	req.Header.Set("Token", token)
+	req.Header.Set("Content-Type", "application/json")
+	_, err = client.Do(req)
+	if err != nil {
+		fmt.Println("could not send headers to server")
+	}
+	//_, err := http.Post(url, "application/json", bytes.NewBuffer(reqBody))
 	return err
 }
 
@@ -109,28 +127,19 @@ func sendData(url string, data []map[string]string) error {
 // the format discovered by FormatDiscovery
 func (buffer *Buffer) parseLines(t *tail.Tail, cg *grok.CompiledGrok, size int) {
 	for line := range t.Lines {
-		buffer.Lock()
 		fields := cg.ParseString(line.Text)
-		buffer.data = append(buffer.data, fields)
+		buffer.data <- fields
 		if len(buffer.data) == size {
-			err := sendData(buffer.url, buffer.data)
-			if err != nil {
-				fmt.Println(err)
-			}
-			buffer.data = make([]map[string]string, 0)
+			buffer.emptyBuffer()
 		}
-		buffer.Unlock()
 	}
 }
 
 func (buffer *Buffer) emptyBuffer() {
-	buffer.Lock()
-	err := sendData(buffer.url, buffer.data)
+	err := sendData(buffer.url, buffer.data, buffer.token)
 	if err != nil {
 		fmt.Println(err)
 	}
-	buffer.data = make([]map[string]string, 0)
-	buffer.Unlock()
 }
 
 func main() {
@@ -143,7 +152,7 @@ func main() {
 	size := parser.Int("s", "size", &argparse.Options{
 		Required: false,
 		Help:     "Maximal number of lines of log the buffer can hold in memory before sending them to Monitoro.",
-		Default:  10000,
+		Default:  100,
 	})
 	schedule := parser.String("", "schedule", &argparse.Options{
 		Required: false,
@@ -160,7 +169,7 @@ func main() {
 		Required: false,
 		Help: "Number of concurrent parsers. Depending on your application you might need more or less threads " +
 			"to parse all your logs in a reasonable amount of time.",
-		Default: 5,
+		Default: 2,
 	})
 	apiURL := parser.String("", "url", &argparse.Options{
 		Required: false,
@@ -173,28 +182,41 @@ func main() {
 		fmt.Print(parser.Usage(err))
 	}
 
-	//secret := os.Getenv("MONITORO_SECRET_KEY")
-	if *pattern == "" {
-		pattern, _ := PatternDiscovery(*path)
-		if pattern == "%{UNKNOWNPATTERN}" {
-			err := errors.New("logs are not standard, specify a pattern using the --pattern flag")
-			fmt.Println(err)
-		}
+	secret := os.Getenv("MONITORO_SECRET_KEY")
+	token, err := GenerateJWT(secret)
+	if err != nil {
+		fmt.Println("could not generate token - invalid secret")
 	}
 
-	t, _ := tail.TailFile(*path, tail.Config{Follow: true})
-	g, _ := grok.New(grok.Config{})
-	cg, _ := g.Compile(*pattern)
-	print(pattern)
+	p, gc, err := PatternDiscovery(*path, *pattern)
+	if err != nil || p == "%{UNKNOWNPATTERN}" {
+		fmt.Println("error finding pattern, use the --pattern flag if you want to use a custom pattern")
+	}
+
+	g, err := grok.New(gc)
+	if err != nil {
+		fmt.Println("unable to build grok expression")
+	}
+
+	t, err := tail.TailFile(*path, tail.Config{Follow: true, MustExist: true, Poll: true})
+	if err != nil {
+		fmt.Printf("error tailing file %s\n", *path)
+	}
+	cg, err := g.Compile(p)
+	if err != nil {
+		fmt.Printf("error compiling grok expression with pattern: %s", p)
+	}
 
 	// Parse lines of the log file and store them in buffer
-	buffer := Buffer{data: make([]map[string]string, 0), url: *apiURL}
+	buffer := Buffer{data: make(chan map[string]string, *size), url: *apiURL, token: token}
 	for i := 0; i < *threads; i++ {
 		go buffer.parseLines(t, cg, *size)
 	}
-
+	//go buffer.parseLines(t, cg, *size)
 	// Cron job for emptying the buffer
 	c := cron.New()
 	_, _ = c.AddFunc(*schedule, buffer.emptyBuffer)
 	c.Start()
+
+	<-make(chan int)
 }
