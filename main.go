@@ -15,8 +15,9 @@ import (
 )
 
 type Buffer struct {
-	data chan map[string]string
-	url  string
+	data  chan map[string]string
+	url   string
+	token string
 }
 
 func readHead(file string) ([]byte, error) {
@@ -100,14 +101,25 @@ func PatternDiscovery(logfile string, customPattern string) (string, grok.Config
 
 // Reads all the content in the channel at once and send the
 // data as a POST request to the given url
-func sendData(url string, ch chan map[string]string) error {
+func sendData(url string, ch chan map[string]string, token string) error {
 	data := make([]map[string]string, len(ch))
 	for len(ch) > 0 {
 		d := <-ch
 		data = append(data, d)
 	}
 	reqBody, _ := json.Marshal(data)
-	_, err := http.Post(url, "application/json", bytes.NewBuffer(reqBody))
+	client := &http.Client{}
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(reqBody))
+	if err != nil {
+		fmt.Println("could not send data to server")
+	}
+	req.Header.Set("Token", token)
+	req.Header.Set("Content-Type", "application/json")
+	_, err = client.Do(req)
+	if err != nil {
+		fmt.Println("could not send headers to server")
+	}
+	//_, err := http.Post(url, "application/json", bytes.NewBuffer(reqBody))
 	return err
 }
 
@@ -124,7 +136,7 @@ func (buffer *Buffer) parseLines(t *tail.Tail, cg *grok.CompiledGrok, size int) 
 }
 
 func (buffer *Buffer) emptyBuffer() {
-	err := sendData(buffer.url, buffer.data)
+	err := sendData(buffer.url, buffer.data, buffer.token)
 	if err != nil {
 		fmt.Println(err)
 	}
@@ -170,7 +182,12 @@ func main() {
 		fmt.Print(parser.Usage(err))
 	}
 
-	//secret := os.Getenv("MONITORO_SECRET_KEY")
+	secret := os.Getenv("MONITORO_SECRET_KEY")
+	token, err := GenerateJWT(secret)
+	if err != nil {
+		fmt.Println("could not generate token - invalid secret")
+	}
+
 	p, gc, err := PatternDiscovery(*path, *pattern)
 	if err != nil || p == "%{UNKNOWNPATTERN}" {
 		fmt.Println("error finding pattern, use the --pattern flag if you want to use a custom pattern")
@@ -191,7 +208,7 @@ func main() {
 	}
 
 	// Parse lines of the log file and store them in buffer
-	buffer := Buffer{data: make(chan map[string]string, *size), url: *apiURL}
+	buffer := Buffer{data: make(chan map[string]string, *size), url: *apiURL, token: token}
 	for i := 0; i < *threads; i++ {
 		go buffer.parseLines(t, cg, *size)
 	}
