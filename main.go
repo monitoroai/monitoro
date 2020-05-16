@@ -4,11 +4,13 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"github.com/akamensky/argparse"
 	"github.com/dgrijalva/jwt-go"
 	"github.com/hpcloud/tail"
+	"github.com/robfig/cron/v3"
 	"github.com/trivago/grok"
-	"log"
 	"net/http"
 	"os"
 	"sync"
@@ -17,6 +19,7 @@ import (
 type Buffer struct {
 	sync.Mutex
 	data []map[string]string
+	url  string
 }
 
 func GenerateJWT(secret string) (string, error) {
@@ -95,44 +98,103 @@ func PatternDiscovery(logfile string) (string, error) {
 	return pattern, nil
 }
 
+// Send the data as a POST request to the given url
+func sendData(url string, data []map[string]string) error {
+	reqBody, _ := json.Marshal(data)
+	_, err := http.Post(url, "application/json", bytes.NewBuffer(reqBody))
+	return err
+}
+
 // Concurrently parse each line of the logs in
 // the format discovered by FormatDiscovery
-func (buffer *Buffer) parseLines(url string, t *tail.Tail, cg *grok.CompiledGrok) {
+func (buffer *Buffer) parseLines(t *tail.Tail, cg *grok.CompiledGrok, size int) {
 	for line := range t.Lines {
 		buffer.Lock()
 		fields := cg.ParseString(line.Text)
 		buffer.data = append(buffer.data, fields)
-		if len(buffer.data) == 1000 {
-			reqBody, _ := json.Marshal(buffer.data)
-			_, err := http.Post(url, "application/json", bytes.NewBuffer(reqBody))
+		if len(buffer.data) == size {
+			err := sendData(buffer.url, buffer.data)
 			if err != nil {
-				log.Fatalln(err)
+				fmt.Println(err)
 			}
+			buffer.data = make([]map[string]string, 0)
 		}
 		buffer.Unlock()
 	}
 }
 
-func main() {
-	// Number of concurrent parser
-	//n := 10
-	//secret := os.Getenv("MONITORO_SECRET_KEY")
-	logfile := "tests/test.log"
+func (buffer *Buffer) emptyBuffer() {
+	buffer.Lock()
+	err := sendData(buffer.url, buffer.data)
+	if err != nil {
+		fmt.Println(err)
+	}
+	buffer.data = make([]map[string]string, 0)
+	buffer.Unlock()
+}
 
-	pattern, _ := PatternDiscovery(logfile)
-	if pattern == "%{UNKNOWNPATTERN}" {
-		fmt.Errorf("Unknown pattern with file: %s\n", logfile)
+func main() {
+	parser := argparse.NewParser("Monitoro", "Client for Monitoro's intrusion detection system.")
+	path := parser.String("p", "path", &argparse.Options{
+		Required: true,
+		Help: "Path of the log file to parse. Depending on your os you should find it" +
+			"in either /var/log/apache/access.log, /var/log/apache2/access.log or /etc/httpd/logs/access_log.",
+	})
+	size := parser.Int("s", "size", &argparse.Options{
+		Required: false,
+		Help:     "Maximal number of lines of log the buffer can hold in memory before sending them to Monitoro.",
+		Default:  10000,
+	})
+	schedule := parser.String("", "schedule", &argparse.Options{
+		Required: false,
+		Help:     "Cron expression for scheduling the time when logs are sent to Monitoro.",
+		Default:  "@every 10m",
+	})
+	pattern := parser.String("", "pattern", &argparse.Options{
+		Required: false,
+		Help: "If your logs are customized or you're not using apache, you can specify your pattern here. " +
+			"We support all of Grok's format, check out https://logz.io/blog/logstash-grok/ for more information.",
+		Default: nil,
+	})
+	threads := parser.Int("n", "threads", &argparse.Options{
+		Required: false,
+		Help: "Number of concurrent parsers. Depending on your application you might need more or less threads " +
+			"to parse all your logs in a reasonable amount of time.",
+		Default: 5,
+	})
+	apiURL := parser.String("", "url", &argparse.Options{
+		Required: false,
+		Help:     "URL of the server where you want to send the logs to. Defaults to Monitoro's official API server.",
+		Default:  "http://127.0.0.1:9000/",
+	})
+
+	err := parser.Parse(os.Args)
+	if err != nil {
+		fmt.Print(parser.Usage(err))
 	}
 
-	t, _ := tail.TailFile(logfile, tail.Config{Follow: true})
+	//secret := os.Getenv("MONITORO_SECRET_KEY")
+	if *pattern == "" {
+		pattern, _ := PatternDiscovery(*path)
+		if pattern == "%{UNKNOWNPATTERN}" {
+			err := errors.New("logs are not standard, specify a pattern using the --pattern flag")
+			fmt.Println(err)
+		}
+	}
+
+	t, _ := tail.TailFile(*path, tail.Config{Follow: true})
 	g, _ := grok.New(grok.Config{})
-	cg, _ := g.Compile(pattern)
+	cg, _ := g.Compile(*pattern)
 	print(pattern)
 
 	// Parse lines of the log file and store them in buffer
-	buffer := Buffer{data: make([]map[string]string, 0)}
-	//for i := 0; i < n; i++ {
-	//	go buffer.parseLines(t, cg)
-	//}
-	buffer.parseLines("http://127.0.0.1:9000/", t, cg)
+	buffer := Buffer{data: make([]map[string]string, 0), url: *apiURL}
+	for i := 0; i < *threads; i++ {
+		go buffer.parseLines(t, cg, *size)
+	}
+
+	// Cron job for emptying the buffer
+	c := cron.New()
+	_, _ = c.AddFunc(*schedule, buffer.emptyBuffer)
+	c.Start()
 }

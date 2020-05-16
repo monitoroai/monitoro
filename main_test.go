@@ -113,8 +113,8 @@ func TestEndToEnd(t *testing.T) {
 			if err != nil {
 				t.Error(err)
 			}
-			buffer := Buffer{data: make([]map[string]string, 0)}
-			go buffer.parseLines(ts.URL, tf, cg)
+			buffer := Buffer{data: make([]map[string]string, 0), url: ts.URL}
+			go buffer.parseLines(tf, cg, 1000)
 			time.Sleep(10000 * time.Millisecond)
 			err = tf.Stop()
 			if err != nil {
